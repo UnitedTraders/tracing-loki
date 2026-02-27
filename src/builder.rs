@@ -9,6 +9,41 @@ use std::collections::hash_map;
 use std::collections::HashMap;
 use url::Url;
 
+/// Determines how log entry lines are serialized before being sent to Loki.
+///
+/// # Examples
+///
+/// ```
+/// // Use plain text format via the Builder:
+/// let builder = tracing_loki::builder().plain_text();
+/// ```
+#[derive(Clone, Debug, Default)]
+pub enum LogLineFormat {
+    /// Serialize log entries as JSON objects (default).
+    ///
+    /// The JSON object contains the event message, extra fields, span fields,
+    /// and metadata (`_target`, `_module_path`, `_file`, `_line`, `_spans`).
+    #[default]
+    Json,
+    /// Serialize log entries as plain text.
+    ///
+    /// The entry line contains the message text. When unmapped fields are
+    /// included (the default), they are appended as `key=value` pairs.
+    /// Metadata fields are excluded by default in plain text mode.
+    PlainText,
+}
+
+/// Maps a tracing event/span field to a Loki stream label.
+///
+/// Created via [`Builder::field_to_label`].
+#[derive(Clone, Debug)]
+pub struct FieldMapping {
+    /// The tracing field name to match (e.g., `"service"`, `"_target"`).
+    pub source_field: String,
+    /// The Loki label name to produce (e.g., `"service"`, `"target"`).
+    pub target_label: String,
+}
+
 /// Create a [`Builder`] for constructing a [`Layer`] and its corresponding
 /// [`BackgroundTask`].
 ///
@@ -23,6 +58,9 @@ pub fn builder() -> Builder {
         labels: FormattedLabels::new(),
         extra_fields: HashMap::new(),
         http_headers,
+        log_format: LogLineFormat::Json,
+        field_mappings: Vec::new(),
+        exclude_unmapped_fields: false,
     }
 }
 
@@ -35,6 +73,9 @@ pub struct Builder {
     labels: FormattedLabels,
     extra_fields: HashMap<String, String>,
     http_headers: reqwest::header::HeaderMap,
+    log_format: LogLineFormat,
+    field_mappings: Vec<FieldMapping>,
+    exclude_unmapped_fields: bool,
 }
 
 impl Builder {
@@ -143,6 +184,122 @@ impl Builder {
         }
         Ok(self)
     }
+    /// Switch the log entry format to plain text.
+    ///
+    /// In plain text mode, the entry line contains only the message text.
+    /// When unmapped fields are included (the default), they are appended as
+    /// `key=value` pairs. Metadata fields (`_target`, `_module_path`, etc.)
+    /// are excluded by default in plain text mode.
+    ///
+    /// The default format is JSON.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let builder = tracing_loki::builder()
+    ///     .plain_text();
+    /// ```
+    pub fn plain_text(mut self) -> Builder {
+        self.log_format = LogLineFormat::PlainText;
+        self
+    }
+    /// Map a tracing event or span field to a Loki stream label.
+    ///
+    /// When an event is emitted, if it contains a field matching
+    /// `source_field`, the field's value is promoted to a Loki stream label
+    /// named `target_label`, and the field is removed from the entry line.
+    ///
+    /// The `target_label` must contain only `[A-Za-z_]` characters, must not
+    /// be `"level"` (reserved), and must not conflict with any existing
+    /// static label. Each `source_field` can only be mapped once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - `target_label` contains invalid characters
+    /// - `target_label` is `"level"`
+    /// - `target_label` conflicts with an existing static label
+    /// - `source_field` is already mapped
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use tracing_loki::Error;
+    /// # fn main() -> Result<(), Error> {
+    /// let builder = tracing_loki::builder()
+    ///     .label("host", "mine")?
+    ///     .field_to_label("service", "service")?
+    ///     .field_to_label("task", "task_name")?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn field_to_label<S: Into<String>, T: Into<String>>(
+        mut self,
+        source: S,
+        target: T,
+    ) -> Result<Builder, Error> {
+        let source_field = source.into();
+        let target_label = target.into();
+
+        // Validate target label characters: [A-Za-z_]
+        for (i, b) in target_label.bytes().enumerate() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'_' => {}
+                _ => {
+                    let c = target_label[i..].chars().next().unwrap();
+                    return Err(Error(ErrorI::InvalidFieldMappingLabelCharacter(
+                        target_label,
+                        c,
+                    )));
+                }
+            }
+        }
+
+        // Reject "level"
+        if target_label == "level" {
+            return Err(Error(ErrorI::ReservedLabelLevel));
+        }
+
+        // Check conflict with static labels
+        if self.labels.contains(&target_label) {
+            return Err(Error(ErrorI::FieldMappingConflictsWithLabel(target_label)));
+        }
+
+        // Check duplicate source field
+        if self
+            .field_mappings
+            .iter()
+            .any(|m| m.source_field == source_field)
+        {
+            return Err(Error(ErrorI::DuplicateFieldMapping(source_field)));
+        }
+
+        self.field_mappings.push(FieldMapping {
+            source_field,
+            target_label,
+        });
+        Ok(self)
+    }
+    /// Exclude unmapped fields from the log entry line.
+    ///
+    /// When enabled, only the message text and extra fields (set via
+    /// [`Builder::extra_field`]) appear in the entry line. Event fields and
+    /// span fields that are not mapped to labels via [`Builder::field_to_label`]
+    /// are discarded.
+    ///
+    /// By default, all fields are included in the entry line.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let builder = tracing_loki::builder()
+    ///     .plain_text()
+    ///     .exclude_unmapped_fields();
+    /// ```
+    pub fn exclude_unmapped_fields(mut self) -> Builder {
+        self.exclude_unmapped_fields = true;
+        self
+    }
     /// Build the tracing [`Layer`] and its corresponding [`BackgroundTask`].
     ///
     /// The `loki_url` is the URL of the Loki server, like
@@ -163,6 +320,9 @@ impl Builder {
             Layer {
                 sender,
                 extra_fields: self.extra_fields,
+                log_format: self.log_format,
+                field_mappings: self.field_mappings,
+                exclude_unmapped_fields: self.exclude_unmapped_fields,
             },
             BackgroundTask::new(loki_url, self.http_headers, receiver, &self.labels)?,
         ))
@@ -194,6 +354,9 @@ impl Builder {
             Layer {
                 sender: sender.clone(),
                 extra_fields: self.extra_fields,
+                log_format: self.log_format,
+                field_mappings: self.field_mappings,
+                exclude_unmapped_fields: self.exclude_unmapped_fields,
             },
             BackgroundTaskController { sender },
             BackgroundTask::new(loki_url, self.http_headers, receiver, &self.labels)?,

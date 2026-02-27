@@ -121,21 +121,22 @@ fn parse_labels(s: &str) -> HashMap<String, String> {
 
 #[tokio::test]
 async fn test_basic_message() -> TestResult {
+    // Arrange
     let server = FakeLokiServer::start().await;
     let (layer, controller, task) = tracing_loki::builder()
         .label("host", "test")?
         .build_controller_url(server.url())?;
-
     let handle = tokio::spawn(task);
 
+    // Act
     let subscriber = tracing_subscriber::registry().with(layer);
     tracing::subscriber::with_default(subscriber, || {
         tracing::info!("test message");
     });
-
     controller.shutdown().await;
     handle.await?;
 
+    // Assert
     let requests = server.requests();
     assert_eq!(requests.len(), 1, "expected exactly one PushRequest");
 
@@ -171,13 +172,14 @@ async fn test_basic_message() -> TestResult {
 
 #[tokio::test]
 async fn test_all_levels() -> TestResult {
+    // Arrange
     let server = FakeLokiServer::start().await;
     let (layer, controller, task) = tracing_loki::builder()
         .label("host", "test")?
         .build_controller_url(server.url())?;
-
     let handle = tokio::spawn(task);
 
+    // Act
     let subscriber = tracing_subscriber::registry().with(layer);
     tracing::subscriber::with_default(subscriber, || {
         tracing::trace!("t");
@@ -186,10 +188,10 @@ async fn test_all_levels() -> TestResult {
         tracing::warn!("w");
         tracing::error!("e");
     });
-
     controller.shutdown().await;
     handle.await?;
 
+    // Assert
     let requests = server.requests();
     let mut found_levels: Vec<String> = requests
         .iter()
@@ -213,21 +215,22 @@ async fn test_all_levels() -> TestResult {
 
 #[tokio::test]
 async fn test_structured_fields() -> TestResult {
+    // Arrange
     let server = FakeLokiServer::start().await;
     let (layer, controller, task) = tracing_loki::builder()
         .label("host", "test")?
         .build_controller_url(server.url())?;
-
     let handle = tokio::spawn(task);
 
+    // Act
     let subscriber = tracing_subscriber::registry().with(layer);
     tracing::subscriber::with_default(subscriber, || {
         tracing::info!(task = "setup", result = "ok", "operation complete");
     });
-
     controller.shutdown().await;
     handle.await?;
 
+    // Assert
     let requests = server.requests();
     let entries: Vec<_> = requests
         .iter()
@@ -250,22 +253,23 @@ async fn test_structured_fields() -> TestResult {
 
 #[tokio::test]
 async fn test_custom_labels() -> TestResult {
+    // Arrange
     let server = FakeLokiServer::start().await;
     let (layer, controller, task) = tracing_loki::builder()
         .label("service", "my_app")?
         .label("host", "test")?
         .build_controller_url(server.url())?;
-
     let handle = tokio::spawn(task);
 
+    // Act
     let subscriber = tracing_subscriber::registry().with(layer);
     tracing::subscriber::with_default(subscriber, || {
         tracing::info!("labeled");
     });
-
     controller.shutdown().await;
     handle.await?;
 
+    // Assert
     let requests = server.requests();
     let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
     assert!(!streams.is_empty());
@@ -279,23 +283,24 @@ async fn test_custom_labels() -> TestResult {
 
 #[tokio::test]
 async fn test_multiple_labels() -> TestResult {
+    // Arrange
     let server = FakeLokiServer::start().await;
     let (layer, controller, task) = tracing_loki::builder()
         .label("host", "alpha")?
         .label("env", "staging")?
         .label("region", "us_east")?
         .build_controller_url(server.url())?;
-
     let handle = tokio::spawn(task);
 
+    // Act
     let subscriber = tracing_subscriber::registry().with(layer);
     tracing::subscriber::with_default(subscriber, || {
         tracing::warn!("multi");
     });
-
     controller.shutdown().await;
     handle.await?;
 
+    // Assert
     let requests = server.requests();
     let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
     assert!(!streams.is_empty());
@@ -311,19 +316,20 @@ async fn test_multiple_labels() -> TestResult {
 
 #[tokio::test]
 async fn test_no_custom_labels() -> TestResult {
+    // Arrange
     let server = FakeLokiServer::start().await;
     let (layer, controller, task) = tracing_loki::builder().build_controller_url(server.url())?;
-
     let handle = tokio::spawn(task);
 
+    // Act
     let subscriber = tracing_subscriber::registry().with(layer);
     tracing::subscriber::with_default(subscriber, || {
         tracing::info!("bare");
     });
-
     controller.shutdown().await;
     handle.await?;
 
+    // Assert
     let requests = server.requests();
     let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
     assert!(!streams.is_empty());
@@ -340,22 +346,23 @@ async fn test_no_custom_labels() -> TestResult {
 
 #[tokio::test]
 async fn test_extra_field() -> TestResult {
+    // Arrange
     let server = FakeLokiServer::start().await;
     let (layer, controller, task) = tracing_loki::builder()
         .label("host", "test")?
         .extra_field("pid", "1234")?
         .build_controller_url(server.url())?;
-
     let handle = tokio::spawn(task);
 
+    // Act
     let subscriber = tracing_subscriber::registry().with(layer);
     tracing::subscriber::with_default(subscriber, || {
         tracing::info!("with extra");
     });
-
     controller.shutdown().await;
     handle.await?;
 
+    // Assert
     let requests = server.requests();
     let entries: Vec<_> = requests
         .iter()
@@ -371,23 +378,24 @@ async fn test_extra_field() -> TestResult {
 
 #[tokio::test]
 async fn test_multiple_extra_fields() -> TestResult {
+    // Arrange
     let server = FakeLokiServer::start().await;
     let (layer, controller, task) = tracing_loki::builder()
         .label("host", "test")?
         .extra_field("pid", "1234")?
         .extra_field("version", "0.2.6")?
         .build_controller_url(server.url())?;
-
     let handle = tokio::spawn(task);
 
+    // Act
     let subscriber = tracing_subscriber::registry().with(layer);
     tracing::subscriber::with_default(subscriber, || {
         tracing::info!("multi extra");
     });
-
     controller.shutdown().await;
     handle.await?;
 
+    // Assert
     let requests = server.requests();
     let entries: Vec<_> = requests
         .iter()
@@ -404,22 +412,23 @@ async fn test_multiple_extra_fields() -> TestResult {
 
 #[tokio::test]
 async fn test_extra_fields_with_event_fields() -> TestResult {
+    // Arrange
     let server = FakeLokiServer::start().await;
     let (layer, controller, task) = tracing_loki::builder()
         .label("host", "test")?
         .extra_field("pid", "1234")?
         .build_controller_url(server.url())?;
-
     let handle = tokio::spawn(task);
 
+    // Act
     let subscriber = tracing_subscriber::registry().with(layer);
     tracing::subscriber::with_default(subscriber, || {
         tracing::info!(task = "init", "starting");
     });
-
     controller.shutdown().await;
     handle.await?;
 
+    // Assert
     let requests = server.requests();
     let entries: Vec<_> = requests
         .iter()
@@ -440,21 +449,22 @@ async fn test_extra_fields_with_event_fields() -> TestResult {
 
 #[tokio::test]
 async fn test_protobuf_structure() -> TestResult {
+    // Arrange
     let server = FakeLokiServer::start().await;
     let (layer, controller, task) = tracing_loki::builder()
         .label("host", "test")?
         .build_controller_url(server.url())?;
-
     let handle = tokio::spawn(task);
 
+    // Act
     let subscriber = tracing_subscriber::registry().with(layer);
     tracing::subscriber::with_default(subscriber, || {
         tracing::info!("structure check");
     });
-
     controller.shutdown().await;
     handle.await?;
 
+    // Assert
     let requests = server.requests();
     assert!(!requests.is_empty(), "expected at least one PushRequest");
 
@@ -477,25 +487,24 @@ async fn test_protobuf_structure() -> TestResult {
 
 #[tokio::test]
 async fn test_timestamp_precision() -> TestResult {
+    // Arrange
     let server = FakeLokiServer::start().await;
     let (layer, controller, task) = tracing_loki::builder()
         .label("host", "test")?
         .build_controller_url(server.url())?;
-
     let handle = tokio::spawn(task);
-
     let before = SystemTime::now();
 
+    // Act
     let subscriber = tracing_subscriber::registry().with(layer);
     tracing::subscriber::with_default(subscriber, || {
         tracing::info!("timed");
     });
-
     let after = SystemTime::now();
-
     controller.shutdown().await;
     handle.await?;
 
+    // Assert
     let requests = server.requests();
     let entries: Vec<_> = requests
         .iter()
@@ -531,23 +540,24 @@ async fn test_timestamp_precision() -> TestResult {
 
 #[tokio::test]
 async fn test_span_fields() -> TestResult {
+    // Arrange
     let server = FakeLokiServer::start().await;
     let (layer, controller, task) = tracing_loki::builder()
         .label("host", "test")?
         .build_controller_url(server.url())?;
-
     let handle = tokio::spawn(task);
 
+    // Act
     let subscriber = tracing_subscriber::registry().with(layer);
     tracing::subscriber::with_default(subscriber, || {
         let span = tracing::info_span!("my_span", span_field = "span_value");
         let _guard = span.enter();
         tracing::info!(event_field = "event_value", "inside span");
     });
-
     controller.shutdown().await;
     handle.await?;
 
+    // Assert
     let requests = server.requests();
     let entries: Vec<_> = requests
         .iter()
@@ -574,6 +584,637 @@ async fn test_span_fields() -> TestResult {
         spans.iter().any(|s| s == "my_span"),
         "_spans should contain 'my_span', got: {:?}",
         spans
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// US5: Plain Text Log Format
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_plain_text_basic() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .plain_text()
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!("hello world");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
+    assert!(!streams.is_empty());
+
+    let labels = parse_labels(&streams[0].labels);
+    assert_eq!(labels.get("host").map(String::as_str), Some("test"));
+    assert_eq!(labels.get("level").map(String::as_str), Some("info"));
+
+    assert_eq!(streams[0].entries.len(), 1);
+    assert_eq!(streams[0].entries[0].line, "hello world");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_plain_text_with_fields_included() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .plain_text()
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!(task = "setup", "starting up");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let entries: Vec<_> = requests
+        .iter()
+        .flat_map(|r| &r.streams)
+        .flat_map(|s| &s.entries)
+        .collect();
+    assert!(!entries.is_empty());
+
+    let line = &entries[0].line;
+    assert!(
+        line.starts_with("starting up"),
+        "line should start with message, got: {:?}",
+        line
+    );
+    assert!(
+        line.contains("task="),
+        "line should contain task= field, got: {:?}",
+        line
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_plain_text_metadata_excluded() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .plain_text()
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!("check meta");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let entries: Vec<_> = requests
+        .iter()
+        .flat_map(|r| &r.streams)
+        .flat_map(|s| &s.entries)
+        .collect();
+    assert!(!entries.is_empty());
+
+    let line = &entries[0].line;
+    assert!(
+        !line.contains("_target"),
+        "plain text should not contain _target, got: {:?}",
+        line
+    );
+    assert!(
+        !line.contains("_file"),
+        "plain text should not contain _file, got: {:?}",
+        line
+    );
+    assert!(
+        !line.contains("_line"),
+        "plain text should not contain _line, got: {:?}",
+        line
+    );
+    assert!(
+        !line.contains("_spans"),
+        "plain text should not contain _spans, got: {:?}",
+        line
+    );
+    assert!(
+        !line.contains("_module_path"),
+        "plain text should not contain _module_path, got: {:?}",
+        line
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_default_format_unchanged() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!("json check");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let entries: Vec<_> = requests
+        .iter()
+        .flat_map(|r| &r.streams)
+        .flat_map(|s| &s.entries)
+        .collect();
+    assert!(!entries.is_empty());
+
+    let json: serde_json::Value = serde_json::from_str(&entries[0].line)?;
+    assert_eq!(json["message"], "json check");
+    assert!(
+        json["_target"].is_string(),
+        "_target should be present in JSON format"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_plain_text_extra_fields_included() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .plain_text()
+        .extra_field("pid", "1234")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!("with extra");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let entries: Vec<_> = requests
+        .iter()
+        .flat_map(|r| &r.streams)
+        .flat_map(|s| &s.entries)
+        .collect();
+    assert!(!entries.is_empty());
+
+    let line = &entries[0].line;
+    assert!(
+        line.contains("pid=1234") || line.contains("pid=\"1234\""),
+        "plain text should contain extra field pid=1234, got: {:?}",
+        line
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_plain_text_metadata_mapped_to_label() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .plain_text()
+        .field_to_label("_target", "target")?
+        .exclude_unmapped_fields()
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!("plain meta");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
+    assert!(!streams.is_empty());
+
+    let labels = parse_labels(&streams[0].labels);
+    assert_eq!(
+        labels.get("target").map(String::as_str),
+        Some("integration"),
+        "_target metadata should be promoted to 'target' label"
+    );
+    assert_eq!(labels.get("host").map(String::as_str), Some("test"));
+    assert_eq!(labels.get("level").map(String::as_str), Some("info"));
+
+    let entry = &streams[0].entries[0];
+    assert_eq!(
+        entry.line, "plain meta",
+        "entry should be message only with exclude_unmapped_fields"
+    );
+    assert!(
+        !entry.line.contains("_target"),
+        "_target should not appear in entry line"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// US6: Field-to-Label Mapping
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_field_to_label_basic() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .field_to_label("service", "service")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!(service = "auth", "request");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
+    assert!(!streams.is_empty());
+
+    let labels = parse_labels(&streams[0].labels);
+    assert_eq!(labels.get("service").map(String::as_str), Some("auth"));
+    assert_eq!(labels.get("host").map(String::as_str), Some("test"));
+    assert_eq!(labels.get("level").map(String::as_str), Some("info"));
+
+    let entry = &streams[0].entries[0];
+    assert!(
+        !entry.line.contains("auth"),
+        "service value should not appear in entry line, got: {:?}",
+        entry.line
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_field_to_label_rename() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .field_to_label("task", "task_name")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!(task = "cleanup", "done");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
+    assert!(!streams.is_empty());
+
+    let labels = parse_labels(&streams[0].labels);
+    assert_eq!(labels.get("task_name").map(String::as_str), Some("cleanup"));
+    assert!(
+        !labels.contains_key("task"),
+        "original field name should not be a label"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_field_to_label_missing_field() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .field_to_label("service", "service")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!("no service field");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
+    assert!(!streams.is_empty());
+
+    let labels = parse_labels(&streams[0].labels);
+    assert_eq!(labels.get("host").map(String::as_str), Some("test"));
+    assert_eq!(labels.get("level").map(String::as_str), Some("info"));
+    assert!(
+        !labels.contains_key("service"),
+        "missing field should not produce a label"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_field_to_label_span_field() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .field_to_label("span_field", "span_field")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        let span = tracing::info_span!("my_span", span_field = "span_value");
+        let _guard = span.enter();
+        tracing::info!("inside span");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
+    assert!(!streams.is_empty());
+
+    let labels = parse_labels(&streams[0].labels);
+    assert_eq!(
+        labels.get("span_field").map(String::as_str),
+        Some("span_value")
+    );
+
+    let entry = &streams[0].entries[0];
+    assert!(
+        !entry.line.contains("span_field"),
+        "span_field should not appear in entry line, got: {:?}",
+        entry.line
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_field_to_label_metadata() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .field_to_label("_target", "target")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!("meta mapped");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
+    assert!(!streams.is_empty());
+
+    let labels = parse_labels(&streams[0].labels);
+    assert_eq!(
+        labels.get("target").map(String::as_str),
+        Some("integration")
+    );
+    Ok(())
+}
+
+#[test]
+fn test_field_to_label_validation_errors() {
+    // Rejects "level" as target
+    assert!(
+        tracing_loki::builder()
+            .field_to_label("x", "level")
+            .is_err(),
+        "should reject 'level' as target label"
+    );
+
+    // Rejects conflict with existing static label
+    assert!(
+        tracing_loki::builder()
+            .label("host", "test")
+            .unwrap()
+            .field_to_label("x", "host")
+            .is_err(),
+        "should reject target that conflicts with static label"
+    );
+
+    // Rejects invalid characters
+    assert!(
+        tracing_loki::builder()
+            .field_to_label("x", "bad-name")
+            .is_err(),
+        "should reject target with invalid characters"
+    );
+
+    // Rejects duplicate source field
+    assert!(
+        tracing_loki::builder()
+            .field_to_label("x", "a")
+            .unwrap()
+            .field_to_label("x", "b")
+            .is_err(),
+        "should reject duplicate source field"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// US7: Exclude Unmapped Fields
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_exclude_unmapped_plain_text() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .plain_text()
+        .field_to_label("service", "service")?
+        .exclude_unmapped_fields()
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!(service = "auth", request_id = "abc", "request received");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
+    assert!(!streams.is_empty());
+
+    let labels = parse_labels(&streams[0].labels);
+    assert_eq!(labels.get("service").map(String::as_str), Some("auth"));
+
+    let entry = &streams[0].entries[0];
+    assert_eq!(
+        entry.line, "request received",
+        "entry should be message only (no unmapped fields)"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_exclude_unmapped_json() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .field_to_label("service", "service")?
+        .exclude_unmapped_fields()
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!(service = "auth", request_id = "abc", "filtered");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let entries: Vec<_> = requests
+        .iter()
+        .flat_map(|r| &r.streams)
+        .flat_map(|s| &s.entries)
+        .collect();
+    assert!(!entries.is_empty());
+
+    let json: serde_json::Value = serde_json::from_str(&entries[0].line)?;
+    assert_eq!(json["message"], "filtered");
+    assert!(
+        json.get("request_id").is_none(),
+        "request_id should be excluded (unmapped)"
+    );
+    assert!(
+        json.get("service").is_none(),
+        "service should be excluded (promoted to label)"
+    );
+    assert!(
+        json["_target"].is_string(),
+        "_target metadata should still be present in JSON"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_exclude_unmapped_preserves_extra_fields() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .plain_text()
+        .extra_field("pid", "1234")?
+        .exclude_unmapped_fields()
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!(task = "init", "starting");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let entries: Vec<_> = requests
+        .iter()
+        .flat_map(|r| &r.streams)
+        .flat_map(|s| &s.entries)
+        .collect();
+    assert!(!entries.is_empty());
+
+    let line = &entries[0].line;
+    assert!(
+        line.contains("pid"),
+        "extra field should be preserved, got: {:?}",
+        line
+    );
+    assert!(
+        !line.contains("task"),
+        "unmapped field should be excluded, got: {:?}",
+        line
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_unmapped_fields_included_by_default() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .plain_text()
+        .field_to_label("service", "service")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!(service = "auth", request_id = "abc", "with unmapped");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
+    assert!(!streams.is_empty());
+
+    let labels = parse_labels(&streams[0].labels);
+    assert_eq!(labels.get("service").map(String::as_str), Some("auth"));
+
+    let entry = &streams[0].entries[0];
+    assert!(
+        entry.line.contains("request_id"),
+        "unmapped fields should be included by default, got: {:?}",
+        entry.line
     );
     Ok(())
 }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use tracing_core::Level;
@@ -55,18 +56,33 @@ impl FormattedLabels {
         }
         Ok(())
     }
-    pub fn finish(&self, level: Level) -> String {
+    /// Check if a label name is already registered.
+    pub fn contains(&self, key: &str) -> bool {
+        self.seen_keys.contains(key)
+    }
+    /// Build the full Prometheus label string including dynamic labels.
+    ///
+    /// Dynamic label names are sorted alphabetically for deterministic ordering.
+    pub fn finish_with_dynamic(&self, level: Level, dynamic: &HashMap<String, String>) -> String {
         let mut result = self.formatted.clone();
         if result.len() > 1 {
             result.push(',');
         }
         result.push_str(match level {
-            Level::TRACE => "level=\"trace\"}",
-            Level::DEBUG => "level=\"debug\"}",
-            Level::INFO => "level=\"info\"}",
-            Level::WARN => "level=\"warn\"}",
-            Level::ERROR => "level=\"error\"}",
+            Level::TRACE => "level=\"trace\"",
+            Level::DEBUG => "level=\"debug\"",
+            Level::INFO => "level=\"info\"",
+            Level::WARN => "level=\"warn\"",
+            Level::ERROR => "level=\"error\"",
         });
+        if !dynamic.is_empty() {
+            let mut keys: Vec<&String> = dynamic.keys().collect();
+            keys.sort();
+            for key in keys {
+                write!(&mut result, ",{}={:?}", key, dynamic[key]).unwrap();
+            }
+        }
+        result.push('}');
         result
     }
 }
@@ -74,28 +90,33 @@ impl FormattedLabels {
 #[cfg(test)]
 mod test {
     use super::FormattedLabels;
+    use std::collections::HashMap;
     use tracing_core::Level;
+
+    fn finish(labels: &FormattedLabels, level: Level) -> String {
+        labels.finish_with_dynamic(level, &HashMap::new())
+    }
 
     #[test]
     fn simple() {
         assert_eq!(
-            FormattedLabels::new().finish(Level::TRACE),
+            finish(&FormattedLabels::new(), Level::TRACE),
             r#"{level="trace"}"#,
         );
         assert_eq!(
-            FormattedLabels::new().finish(Level::DEBUG),
+            finish(&FormattedLabels::new(), Level::DEBUG),
             r#"{level="debug"}"#,
         );
         assert_eq!(
-            FormattedLabels::new().finish(Level::INFO),
+            finish(&FormattedLabels::new(), Level::INFO),
             r#"{level="info"}"#,
         );
         assert_eq!(
-            FormattedLabels::new().finish(Level::WARN),
+            finish(&FormattedLabels::new(), Level::WARN),
             r#"{level="warn"}"#,
         );
         assert_eq!(
-            FormattedLabels::new().finish(Level::ERROR),
+            finish(&FormattedLabels::new(), Level::ERROR),
             r#"{level="error"}"#,
         );
     }

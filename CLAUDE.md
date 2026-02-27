@@ -45,6 +45,7 @@ CI runs on stable and nightly Rust: fmt check (stable only), build, test, bench.
 
 ## Active Technologies
 - Rust 2021 edition, stable + nightly (CI matrix) + racing 0.1, tracing-subscriber 0.3, reqwest, prost, snap, loki-api (workspace) (001-mock-loki-integration-tests)
+- Rust 2021 edition, stable + nightly (CI matrix) + racing 0.1, tracing-subscriber 0.3, reqwest, prost, snap, serde_json, loki-api (workspace) (002-plain-text-format)
 
 ## Recent Changes
 - 001-mock-loki-integration-tests: Added Rust 2021 edition, stable + nightly (CI matrix) + racing 0.1, tracing-subscriber 0.3, reqwest, prost, snap, loki-api (workspace)
