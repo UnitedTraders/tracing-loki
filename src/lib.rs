@@ -55,7 +55,6 @@ pub extern crate url;
 
 use loki_api::logproto as loki;
 use loki_api::prost;
-use serde::Serialize;
 use std::cmp;
 use std::collections::HashMap;
 use std::error;
@@ -83,13 +82,13 @@ use tracing_subscriber::registry::LookupSpan;
 use url::Url;
 
 use labels::FormattedLabels;
-use level_map::LevelMap;
-use log_support::SerializeEventFieldMapStrippingLog;
 use no_subscriber::NoSubscriber;
 use ErrorInner as ErrorI;
 
 pub use builder::builder;
 pub use builder::Builder;
+pub use builder::FieldMapping;
+pub use builder::LogLineFormat;
 
 mod builder;
 mod labels;
@@ -129,8 +128,11 @@ impl error::Error for Error {}
 #[derive(Debug)]
 enum ErrorInner {
     DuplicateExtraField(String),
+    DuplicateFieldMapping(String),
     DuplicateHttpHeader(String),
     DuplicateLabel(String),
+    FieldMappingConflictsWithLabel(String),
+    InvalidFieldMappingLabelCharacter(String, char),
     InvalidHttpHeaderName(String),
     InvalidHttpHeaderValue(String),
     InvalidLabelCharacter(String, char),
@@ -143,8 +145,25 @@ impl fmt::Display for ErrorInner {
         use self::ErrorInner::*;
         match self {
             DuplicateExtraField(key) => write!(f, "duplicate extra field key {:?}", key),
+            DuplicateFieldMapping(source) => {
+                write!(f, "duplicate field mapping source {:?}", source)
+            }
             DuplicateHttpHeader(name) => write!(f, "duplicate HTTP header {:?}", name),
             DuplicateLabel(key) => write!(f, "duplicate label key {:?}", key),
+            FieldMappingConflictsWithLabel(target) => {
+                write!(
+                    f,
+                    "field mapping target {:?} conflicts with an existing label",
+                    target
+                )
+            }
+            InvalidFieldMappingLabelCharacter(target, c) => {
+                write!(
+                    f,
+                    "invalid character {:?} in field mapping target label {:?}",
+                    c, target
+                )
+            }
             InvalidHttpHeaderName(name) => write!(f, "invalid HTTP header name {:?}", name),
             InvalidHttpHeaderValue(name) => write!(f, "invalid HTTP header value for {:?}", name),
             InvalidLabelCharacter(key, c) => {
@@ -229,6 +248,9 @@ pub fn layer(
 pub struct Layer {
     extra_fields: HashMap<String, String>,
     sender: mpsc::Sender<Option<LokiEvent>>,
+    log_format: builder::LogLineFormat,
+    field_mappings: Vec<builder::FieldMapping>,
+    exclude_unmapped_fields: bool,
 }
 
 struct LokiEvent {
@@ -236,21 +258,7 @@ struct LokiEvent {
     timestamp: SystemTime,
     level: Level,
     message: String,
-}
-
-#[derive(Serialize)]
-struct SerializedEvent<'a> {
-    #[serde(flatten)]
-    event: SerializeEventFieldMapStrippingLog<'a>,
-    #[serde(flatten)]
-    extra_fields: &'a HashMap<String, String>,
-    #[serde(flatten)]
-    span_fields: serde_json::Map<String, serde_json::Value>,
-    _spans: &'a [&'a str],
-    _target: &'a str,
-    _module_path: Option<&'a str>,
-    _file: Option<&'a str>,
-    _line: Option<u32>,
+    dynamic_labels: HashMap<String, String>,
 }
 
 #[derive(Default)]
@@ -288,6 +296,28 @@ impl Visit for Fields {
     }
     fn record_error(&mut self, field: &Field, value: &(dyn error::Error + 'static)) {
         self.record(field, format!("{}", value));
+    }
+}
+
+/// Format a JSON value for plain text `key=value` output.
+/// Values containing spaces are quoted with double quotes.
+fn format_plain_text_value(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => format_plain_text_str(s),
+        other => {
+            let s = other.to_string();
+            format_plain_text_str(&s)
+        }
+    }
+}
+
+/// Format a string for plain text `key=value` output.
+/// Values containing spaces, quotes, or backslashes are quoted.
+fn format_plain_text_str(s: &str) -> String {
+    if s.contains(' ') || s.contains('"') || s.contains('\\') {
+        format!("{:?}", s)
+    } else {
+        s.to_string()
     }
 }
 
@@ -333,22 +363,171 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
                 })
             })
             .unwrap_or(Vec::new());
+
+        // Collect event fields into a map for field extraction
+        let mut event_fields = Fields::default();
+        event.record(&mut event_fields);
+
+        // Extract dynamic labels from field mappings
+        let mut dynamic_labels = HashMap::new();
+        for mapping in &self.field_mappings {
+            let value = event_fields
+                .fields
+                .remove(&mapping.source_field)
+                .or_else(|| span_fields.remove(&mapping.source_field))
+                .map(|v| match v {
+                    serde_json::Value::String(s) => s,
+                    other => other.to_string(),
+                })
+                .or_else(|| match mapping.source_field.as_str() {
+                    "_target" => Some(meta.target().to_string()),
+                    "_module_path" => meta.module_path().map(|s| s.to_string()),
+                    "_file" => meta.file().map(|s| s.to_string()),
+                    "_line" => meta.line().map(|l| l.to_string()),
+                    _ => None,
+                });
+            if let Some(val) = value {
+                dynamic_labels.insert(mapping.target_label.clone(), val);
+            }
+        }
+
+        // Determine which metadata fields were mapped (to exclude from output)
+        let target_mapped = self
+            .field_mappings
+            .iter()
+            .any(|m| m.source_field == "_target");
+        let module_path_mapped = self
+            .field_mappings
+            .iter()
+            .any(|m| m.source_field == "_module_path");
+        let file_mapped = self
+            .field_mappings
+            .iter()
+            .any(|m| m.source_field == "_file");
+        let line_mapped = self
+            .field_mappings
+            .iter()
+            .any(|m| m.source_field == "_line");
+
+        // Optionally exclude unmapped fields
+        if self.exclude_unmapped_fields {
+            event_fields.fields.retain(|k, _| k == "message");
+            span_fields.clear();
+        }
+
+        let message = match self.log_format {
+            builder::LogLineFormat::Json => {
+                // Strip log.* fields from the event fields map (matching existing behavior)
+                event_fields.fields.retain(|k, _| !k.starts_with("log."));
+
+                // Build JSON with remaining fields
+                let mut map = serde_json::Map::new();
+
+                // Event fields (including message)
+                for (k, v) in &event_fields.fields {
+                    map.insert(k.clone(), v.clone());
+                }
+
+                // Extra fields
+                for (k, v) in &self.extra_fields {
+                    map.insert(k.clone(), serde_json::Value::String(v.clone()));
+                }
+
+                // Span fields
+                for (k, v) in &span_fields {
+                    map.insert(k.clone(), v.clone());
+                }
+
+                // Metadata (unless mapped)
+                map.insert(
+                    "_spans".into(),
+                    serde_json::Value::Array(
+                        spans
+                            .iter()
+                            .map(|s| serde_json::Value::String(s.to_string()))
+                            .collect(),
+                    ),
+                );
+                if !target_mapped {
+                    map.insert(
+                        "_target".into(),
+                        serde_json::Value::String(meta.target().to_string()),
+                    );
+                }
+                if !module_path_mapped {
+                    if let Some(mp) = meta.module_path() {
+                        map.insert(
+                            "_module_path".into(),
+                            serde_json::Value::String(mp.to_string()),
+                        );
+                    }
+                }
+                if !file_mapped {
+                    if let Some(f) = meta.file() {
+                        map.insert("_file".into(), serde_json::Value::String(f.to_string()));
+                    }
+                }
+                if !line_mapped {
+                    if let Some(l) = meta.line() {
+                        map.insert("_line".into(), serde_json::json!(l));
+                    }
+                }
+
+                serde_json::to_string(&map).expect("json serialization shouldn't fail")
+            }
+            builder::LogLineFormat::PlainText => {
+                // Extract message
+                let msg = event_fields
+                    .fields
+                    .remove("message")
+                    .and_then(|v| match v {
+                        serde_json::Value::String(s) => Some(s),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+
+                let mut line = msg;
+
+                // Append remaining event fields and span fields (if not excluded)
+                if !self.exclude_unmapped_fields {
+                    // Strip log.* fields
+                    event_fields.fields.retain(|k, _| !k.starts_with("log."));
+
+                    for (k, v) in &event_fields.fields {
+                        let val_str = format_plain_text_value(v);
+                        line.push(' ');
+                        line.push_str(k);
+                        line.push('=');
+                        line.push_str(&val_str);
+                    }
+                    for (k, v) in &span_fields {
+                        let val_str = format_plain_text_value(v);
+                        line.push(' ');
+                        line.push_str(k);
+                        line.push('=');
+                        line.push_str(&val_str);
+                    }
+                }
+
+                // Extra fields are always appended
+                for (k, v) in &self.extra_fields {
+                    line.push(' ');
+                    line.push_str(k);
+                    line.push('=');
+                    line.push_str(&format_plain_text_str(v));
+                }
+
+                line
+            }
+        };
+
         // TODO: Anything useful to do when the capacity has been reached?
         let _ = self.sender.try_send(Some(LokiEvent {
             trigger_send: !meta.target().starts_with("tracing_loki"),
             timestamp,
             level: *meta.level(),
-            message: serde_json::to_string(&SerializedEvent {
-                event: SerializeEventFieldMapStrippingLog(event),
-                extra_fields: &self.extra_fields,
-                span_fields,
-                _spans: &spans,
-                _target: meta.target(),
-                _module_path: meta.module_path(),
-                _file: meta.file(),
-                _line: meta.line(),
-            })
-            .expect("json serialization shouldn't fail"),
+            message,
+            dynamic_labels,
         }));
     }
 }
@@ -440,7 +619,8 @@ impl error::Error for BadRedirect {}
 pub struct BackgroundTask {
     loki_url: Url,
     receiver: mpsc::Receiver<Option<LokiEvent>>,
-    queues: LevelMap<SendQueue>,
+    labels: FormattedLabels,
+    queues: HashMap<String, SendQueue>,
     buffer: Buffer,
     http_client: reqwest::Client,
     backoff_count: u32,
@@ -462,7 +642,8 @@ impl BackgroundTask {
             loki_url: loki_url
                 .join("loki/api/v1/push")
                 .map_err(|_| Error(ErrorI::InvalidLokiUrl))?,
-            queues: LevelMap::from_fn(|level| SendQueue::new(labels.finish(level))),
+            labels: labels.clone(),
+            queues: HashMap::new(),
             buffer: Buffer::new(),
             http_client: reqwest::Client::builder()
                 .user_agent(concat!(
@@ -511,7 +692,15 @@ impl Future for BackgroundTask {
 
         while let Poll::Ready(maybe_maybe_item) = Pin::new(&mut self.receiver).poll_recv(cx) {
             match maybe_maybe_item {
-                Some(Some(item)) => self.queues[item.level].push(item),
+                Some(Some(item)) => {
+                    let label_key = self
+                        .labels
+                        .finish_with_dynamic(item.level, &item.dynamic_labels);
+                    self.queues
+                        .entry(label_key.clone())
+                        .or_insert_with(|| SendQueue::new(label_key))
+                        .push(item);
+                }
                 Some(None) => self.quitting = true, // Explicit close.
                 None => self.quitting = true,       // The sender was dropped.
             }
