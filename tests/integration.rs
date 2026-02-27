@@ -312,8 +312,7 @@ async fn test_multiple_labels() -> TestResult {
 #[tokio::test]
 async fn test_no_custom_labels() -> TestResult {
     let server = FakeLokiServer::start().await;
-    let (layer, controller, task) = tracing_loki::builder()
-        .build_controller_url(server.url())?;
+    let (layer, controller, task) = tracing_loki::builder().build_controller_url(server.url())?;
 
     let handle = tokio::spawn(task);
 
