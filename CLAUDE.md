@@ -42,3 +42,9 @@ CI runs on stable and nightly Rust: fmt check (stable only), build, test, bench.
 - `default = ["compat-0-2-1", "native-tls"]`
 - `native-tls` / `rustls` — mutually exclusive TLS backends for reqwest
 - `compat-0-2-1` — forward compatibility flag (required)
+
+## Active Technologies
+- Rust 2021 edition, stable + nightly (CI matrix) + racing 0.1, tracing-subscriber 0.3, reqwest, prost, snap, loki-api (workspace) (001-mock-loki-integration-tests)
+
+## Recent Changes
+- 001-mock-loki-integration-tests: Added Rust 2021 edition, stable + nightly (CI matrix) + racing 0.1, tracing-subscriber 0.3, reqwest, prost, snap, loki-api (workspace)
