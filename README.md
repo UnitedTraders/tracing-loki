@@ -56,3 +56,42 @@ async fn main() -> Result<(), tracing_loki::Error> {
     Ok(())
 }
 ```
+
+Plain text mode
+---------------
+
+By default, log entries are serialized as JSON. You can switch to plain text
+mode and optionally promote event fields to Loki stream labels:
+
+```rust
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use url::Url;
+
+#[tokio::main]
+async fn main() -> Result<(), tracing_loki::Error> {
+    let (layer, task) = tracing_loki::builder()
+        .label("host", "mine")?
+        .plain_text()
+        .field_to_label("service", "service")?
+        .exclude_unmapped_fields()
+        .build_url(Url::parse("http://127.0.0.1:3100").unwrap())?;
+
+    tracing_subscriber::registry()
+        .with(layer)
+        .init();
+
+    tokio::spawn(task);
+
+    tracing::info!(
+        service = "auth",
+        request_id = "abc-123",
+        "user logged in",
+    );
+    // Entry line: "user logged in"
+    // Stream labels: {host="mine", level="info", service="auth"}
+    // request_id is excluded because exclude_unmapped_fields() is set.
+
+    Ok(())
+}
+```
