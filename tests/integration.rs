@@ -793,6 +793,52 @@ async fn test_plain_text_extra_fields_included() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_plain_text_metadata_mapped_to_label() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .plain_text()
+        .field_to_label("_target", "target")?
+        .exclude_unmapped_fields()
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!("plain meta");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
+    assert!(!streams.is_empty());
+
+    let labels = parse_labels(&streams[0].labels);
+    assert_eq!(
+        labels.get("target").map(String::as_str),
+        Some("integration"),
+        "_target metadata should be promoted to 'target' label"
+    );
+    assert_eq!(labels.get("host").map(String::as_str), Some("test"));
+    assert_eq!(labels.get("level").map(String::as_str), Some("info"));
+
+    let entry = &streams[0].entries[0];
+    assert_eq!(
+        entry.line, "plain meta",
+        "entry should be message only with exclude_unmapped_fields"
+    );
+    assert!(
+        !entry.line.contains("_target"),
+        "_target should not appear in entry line"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // US6: Field-to-Label Mapping
 // ---------------------------------------------------------------------------

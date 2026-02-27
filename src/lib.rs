@@ -92,8 +92,6 @@ pub use builder::LogLineFormat;
 
 mod builder;
 mod labels;
-mod level_map;
-mod log_support;
 mod no_subscriber;
 
 #[cfg(doctest)]

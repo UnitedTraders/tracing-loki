@@ -60,9 +60,6 @@ impl FormattedLabels {
     pub fn contains(&self, key: &str) -> bool {
         self.seen_keys.contains(key)
     }
-    pub fn finish(&self, level: Level) -> String {
-        self.finish_with_dynamic(level, &HashMap::new())
-    }
     /// Build the full Prometheus label string including dynamic labels.
     ///
     /// Dynamic label names are sorted alphabetically for deterministic ordering.
@@ -93,28 +90,33 @@ impl FormattedLabels {
 #[cfg(test)]
 mod test {
     use super::FormattedLabels;
+    use std::collections::HashMap;
     use tracing_core::Level;
+
+    fn finish(labels: &FormattedLabels, level: Level) -> String {
+        labels.finish_with_dynamic(level, &HashMap::new())
+    }
 
     #[test]
     fn simple() {
         assert_eq!(
-            FormattedLabels::new().finish(Level::TRACE),
+            finish(&FormattedLabels::new(), Level::TRACE),
             r#"{level="trace"}"#,
         );
         assert_eq!(
-            FormattedLabels::new().finish(Level::DEBUG),
+            finish(&FormattedLabels::new(), Level::DEBUG),
             r#"{level="debug"}"#,
         );
         assert_eq!(
-            FormattedLabels::new().finish(Level::INFO),
+            finish(&FormattedLabels::new(), Level::INFO),
             r#"{level="info"}"#,
         );
         assert_eq!(
-            FormattedLabels::new().finish(Level::WARN),
+            finish(&FormattedLabels::new(), Level::WARN),
             r#"{level="warn"}"#,
         );
         assert_eq!(
-            FormattedLabels::new().finish(Level::ERROR),
+            finish(&FormattedLabels::new(), Level::ERROR),
             r#"{level="error"}"#,
         );
     }
