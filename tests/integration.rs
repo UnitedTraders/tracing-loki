@@ -1220,6 +1220,154 @@ async fn test_unmapped_fields_included_by_default() -> TestResult {
 }
 
 // ---------------------------------------------------------------------------
+// Stress Tests
+// ---------------------------------------------------------------------------
+
+/// Emits many events and verifies all are drained on shutdown.
+#[tokio::test]
+async fn test_stress_high_volume() -> TestResult {
+    // Arrange
+    let event_count = 500;
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        for i in 0..event_count {
+            tracing::info!(i = i, "event");
+        }
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let total_entries: usize = server
+        .requests()
+        .iter()
+        .flat_map(|r| &r.streams)
+        .map(|s| s.entries.len())
+        .sum();
+    assert_eq!(
+        total_entries, event_count,
+        "all {} events should be delivered, got {}",
+        event_count, total_entries
+    );
+    Ok(())
+}
+
+/// Emits events with many unique dynamic label combinations and verifies
+/// that the BackgroundTask HashMap<String, SendQueue> drains completely.
+#[tokio::test]
+async fn test_stress_diverse_dynamic_labels() -> TestResult {
+    // Arrange
+    let event_count = 200;
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .field_to_label("request_id", "request_id")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act — each event produces a unique label combination
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        for i in 0..event_count {
+            tracing::info!(request_id = %i, "req");
+        }
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let total_entries: usize = requests
+        .iter()
+        .flat_map(|r| &r.streams)
+        .map(|s| s.entries.len())
+        .sum();
+    assert_eq!(
+        total_entries, event_count,
+        "all {} events should be delivered, got {}",
+        event_count, total_entries
+    );
+
+    // Each event should have created a unique stream (unique label set)
+    let total_streams: usize = requests.iter().map(|r| r.streams.len()).sum();
+    assert_eq!(
+        total_streams, event_count,
+        "expected {} unique streams (one per request_id), got {}",
+        event_count, total_streams
+    );
+    Ok(())
+}
+
+/// Emits events across all log levels with dynamic labels to stress
+/// both the level and label routing in BackgroundTask.
+#[tokio::test]
+async fn test_stress_mixed_levels_and_labels() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .field_to_label("service", "service")?
+        .plain_text()
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act — 3 services x 5 levels x 10 events = 150 events, 15 unique streams
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        for _ in 0..10 {
+            tracing::trace!(service = "alpha", "t");
+            tracing::debug!(service = "alpha", "d");
+            tracing::info!(service = "alpha", "i");
+            tracing::warn!(service = "alpha", "w");
+            tracing::error!(service = "alpha", "e");
+
+            tracing::trace!(service = "beta", "t");
+            tracing::debug!(service = "beta", "d");
+            tracing::info!(service = "beta", "i");
+            tracing::warn!(service = "beta", "w");
+            tracing::error!(service = "beta", "e");
+
+            tracing::trace!(service = "gamma", "t");
+            tracing::debug!(service = "gamma", "d");
+            tracing::info!(service = "gamma", "i");
+            tracing::warn!(service = "gamma", "w");
+            tracing::error!(service = "gamma", "e");
+        }
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let total_entries: usize = requests
+        .iter()
+        .flat_map(|r| &r.streams)
+        .map(|s| s.entries.len())
+        .sum();
+    assert_eq!(total_entries, 150, "expected 150 events, got {}", total_entries);
+
+    // Collect all unique label sets
+    let mut unique_streams: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for stream in requests.iter().flat_map(|r| &r.streams) {
+        unique_streams.insert(stream.labels.clone());
+    }
+    assert_eq!(
+        unique_streams.len(),
+        15,
+        "expected 15 unique streams (3 services x 5 levels), got {}",
+        unique_streams.len()
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // parse_labels unit test
 // ---------------------------------------------------------------------------
 
