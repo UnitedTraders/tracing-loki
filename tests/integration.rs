@@ -1351,7 +1351,11 @@ async fn test_stress_mixed_levels_and_labels() -> TestResult {
         .flat_map(|r| &r.streams)
         .map(|s| s.entries.len())
         .sum();
-    assert_eq!(total_entries, 150, "expected 150 events, got {}", total_entries);
+    assert_eq!(
+        total_entries, 150,
+        "expected 150 events, got {}",
+        total_entries
+    );
 
     // Collect all unique label sets
     let mut unique_streams: std::collections::HashSet<String> = std::collections::HashSet::new();
