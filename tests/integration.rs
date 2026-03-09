@@ -13,6 +13,11 @@ use tokio::net::TcpListener;
 use tracing_subscriber::layer::SubscriberExt;
 use url::Url;
 
+#[cfg(feature = "opentelemetry")]
+use opentelemetry::trace::TracerProvider as _;
+#[cfg(feature = "opentelemetry")]
+use tracing_opentelemetry::OpenTelemetryLayer;
+
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 // ---------------------------------------------------------------------------
@@ -1593,4 +1598,525 @@ fn test_parse_labels() {
     let single = parse_labels(r#"{level="error"}"#);
     assert_eq!(single.len(), 1);
     assert_eq!(single.get("level").map(String::as_str), Some("error"));
+}
+
+// ---------------------------------------------------------------------------
+// OpenTelemetry Field Extraction Tests (feature = "opentelemetry")
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "opentelemetry")]
+#[tokio::test]
+async fn test_otel_json_trace_and_span_ids() -> TestResult {
+    // Arrange: set up OTel tracer + Loki layer
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+    let tracer = provider.tracer("test");
+    let otel_layer = OpenTelemetryLayer::new(tracer);
+
+    let subscriber = tracing_subscriber::registry().with(layer).with(otel_layer);
+
+    // Act
+    tracing::subscriber::with_default(subscriber, || {
+        let span = tracing::info_span!("my_otel_span");
+        let _guard = span.enter();
+        tracing::info!("otel event");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let entries: Vec<_> = requests
+        .iter()
+        .flat_map(|r| &r.streams)
+        .flat_map(|s| &s.entries)
+        .collect();
+    assert!(!entries.is_empty());
+
+    let json: serde_json::Value = serde_json::from_str(&entries[0].line)?;
+    let trace_id = json["trace_id"]
+        .as_str()
+        .expect("trace_id should be present");
+    let span_id = json["span_id"].as_str().expect("span_id should be present");
+    let span_name = json["span_name"]
+        .as_str()
+        .expect("span_name should be present");
+
+    assert_eq!(trace_id.len(), 32, "trace_id should be 32-char hex");
+    assert_eq!(span_id.len(), 16, "span_id should be 16-char hex");
+    assert_eq!(span_name, "my_otel_span");
+    assert!(
+        trace_id.chars().all(|c| c.is_ascii_hexdigit()),
+        "trace_id should be valid hex: {}",
+        trace_id
+    );
+    assert!(
+        span_id.chars().all(|c| c.is_ascii_hexdigit()),
+        "span_id should be valid hex: {}",
+        span_id
+    );
+    // Verify trace_id is not all zeros
+    assert_ne!(
+        trace_id, "00000000000000000000000000000000",
+        "trace_id should not be all zeros"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "opentelemetry")]
+#[tokio::test]
+async fn test_otel_child_span_trace_id() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+    let tracer = provider.tracer("test");
+    let otel_layer = OpenTelemetryLayer::new(tracer);
+
+    let subscriber = tracing_subscriber::registry().with(layer).with(otel_layer);
+
+    // Act: emit from parent and child spans
+    tracing::subscriber::with_default(subscriber, || {
+        let parent = tracing::info_span!("parent_span");
+        let _parent_guard = parent.enter();
+        tracing::info!("parent event");
+
+        let child = tracing::info_span!("child_span");
+        let _child_guard = child.enter();
+        tracing::info!("child event");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let entries: Vec<_> = requests
+        .iter()
+        .flat_map(|r| &r.streams)
+        .flat_map(|s| &s.entries)
+        .collect();
+    assert!(entries.len() >= 2, "expected at least 2 entries");
+
+    // Find parent and child entries
+    let mut parent_trace_id = None;
+    let mut child_trace_id = None;
+    let mut child_span_name = None;
+    for entry in &entries {
+        let json: serde_json::Value = serde_json::from_str(&entry.line)?;
+        if json["message"] == "parent event" {
+            parent_trace_id = json["trace_id"].as_str().map(String::from);
+        }
+        if json["message"] == "child event" {
+            child_trace_id = json["trace_id"].as_str().map(String::from);
+            child_span_name = json["span_name"].as_str().map(String::from);
+        }
+    }
+
+    let parent_tid = parent_trace_id.expect("parent should have trace_id");
+    let child_tid = child_trace_id.expect("child should have trace_id");
+    assert_eq!(
+        parent_tid, child_tid,
+        "child trace_id should match parent trace_id"
+    );
+    assert_eq!(
+        child_span_name.as_deref(),
+        Some("child_span"),
+        "child span_name should be 'child_span'"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "opentelemetry")]
+#[tokio::test]
+async fn test_otel_fallback_span_id_without_otel_layer() -> TestResult {
+    // Arrange: Loki layer WITHOUT OpenTelemetryLayer
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    let subscriber = tracing_subscriber::registry().with(layer);
+
+    // Act
+    tracing::subscriber::with_default(subscriber, || {
+        let span = tracing::info_span!("fallback_span");
+        let _guard = span.enter();
+        tracing::info!("fallback event");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let entries: Vec<_> = requests
+        .iter()
+        .flat_map(|r| &r.streams)
+        .flat_map(|s| &s.entries)
+        .collect();
+    assert!(!entries.is_empty());
+
+    let json: serde_json::Value = serde_json::from_str(&entries[0].line)?;
+    let span_id = json["span_id"]
+        .as_str()
+        .expect("span_id should be present (fallback)");
+    let span_name = json["span_name"]
+        .as_str()
+        .expect("span_name should be present");
+
+    assert_eq!(span_id.len(), 16, "fallback span_id should be 16-char hex");
+    assert!(
+        span_id.chars().all(|c| c.is_ascii_hexdigit()),
+        "fallback span_id should be valid hex: {}",
+        span_id
+    );
+    assert_eq!(span_name, "fallback_span");
+    assert!(
+        json.get("trace_id").is_none(),
+        "trace_id should be absent without OTel layer"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "opentelemetry")]
+#[tokio::test]
+async fn test_otel_no_fields_outside_span() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+    let tracer = provider.tracer("test");
+    let otel_layer = OpenTelemetryLayer::new(tracer);
+
+    let subscriber = tracing_subscriber::registry().with(layer).with(otel_layer);
+
+    // Act: emit outside any span
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!("no span event");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let entries: Vec<_> = requests
+        .iter()
+        .flat_map(|r| &r.streams)
+        .flat_map(|s| &s.entries)
+        .collect();
+    assert!(!entries.is_empty());
+
+    let json: serde_json::Value = serde_json::from_str(&entries[0].line)?;
+    assert!(
+        json.get("trace_id").is_none(),
+        "trace_id should be absent outside span"
+    );
+    assert!(
+        json.get("span_id").is_none(),
+        "span_id should be absent outside span"
+    );
+    assert!(
+        json.get("span_name").is_none(),
+        "span_name should be absent outside span"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// US2: OTel Field-to-Label Promotion (feature = "opentelemetry")
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "opentelemetry")]
+#[tokio::test]
+async fn test_otel_field_to_label_trace_id() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .field_to_label("trace_id", "trace_id")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+    let tracer = provider.tracer("test");
+    let otel_layer = OpenTelemetryLayer::new(tracer);
+
+    let subscriber = tracing_subscriber::registry().with(layer).with(otel_layer);
+
+    // Act
+    tracing::subscriber::with_default(subscriber, || {
+        let span = tracing::info_span!("labeled_span");
+        let _guard = span.enter();
+        tracing::info!("label promotion");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
+    assert!(!streams.is_empty());
+
+    let labels = parse_labels(&streams[0].labels);
+    let trace_id = labels
+        .get("trace_id")
+        .expect("trace_id should be a stream label");
+    assert_eq!(trace_id.len(), 32, "trace_id label should be 32-char hex");
+    assert!(
+        trace_id.chars().all(|c| c.is_ascii_hexdigit()),
+        "trace_id label should be valid hex: {}",
+        trace_id
+    );
+
+    // trace_id should be removed from entry body
+    let entries: Vec<_> = requests
+        .iter()
+        .flat_map(|r| &r.streams)
+        .flat_map(|s| &s.entries)
+        .collect();
+    let json: serde_json::Value = serde_json::from_str(&entries[0].line)?;
+    assert!(
+        json.get("trace_id").is_none(),
+        "trace_id should be removed from entry body when promoted to label"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "opentelemetry")]
+#[tokio::test]
+async fn test_otel_field_to_label_span_id() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .field_to_label("span_id", "span_id")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+    let tracer = provider.tracer("test");
+    let otel_layer = OpenTelemetryLayer::new(tracer);
+
+    let subscriber = tracing_subscriber::registry().with(layer).with(otel_layer);
+
+    // Act
+    tracing::subscriber::with_default(subscriber, || {
+        let span = tracing::info_span!("span_label");
+        let _guard = span.enter();
+        tracing::info!("span_id promotion");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
+    assert!(!streams.is_empty());
+
+    let labels = parse_labels(&streams[0].labels);
+    let span_id = labels
+        .get("span_id")
+        .expect("span_id should be a stream label");
+    assert_eq!(span_id.len(), 16, "span_id label should be 16-char hex");
+    assert!(
+        span_id.chars().all(|c| c.is_ascii_hexdigit()),
+        "span_id label should be valid hex: {}",
+        span_id
+    );
+    Ok(())
+}
+
+#[cfg(feature = "opentelemetry")]
+#[tokio::test]
+async fn test_otel_no_label_promotion_without_mapping() -> TestResult {
+    // Arrange: NO field_to_label mapping for OTel fields
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+    let tracer = provider.tracer("test");
+    let otel_layer = OpenTelemetryLayer::new(tracer);
+
+    let subscriber = tracing_subscriber::registry().with(layer).with(otel_layer);
+
+    // Act
+    tracing::subscriber::with_default(subscriber, || {
+        let span = tracing::info_span!("unmapped_span");
+        let _guard = span.enter();
+        tracing::info!("no mapping");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
+    assert!(!streams.is_empty());
+
+    let labels = parse_labels(&streams[0].labels);
+    assert!(
+        !labels.contains_key("trace_id"),
+        "trace_id should NOT be a label without field_to_label mapping"
+    );
+    assert!(
+        !labels.contains_key("span_id"),
+        "span_id should NOT be a label without field_to_label mapping"
+    );
+
+    // But OTel fields should be in the entry body
+    let entries: Vec<_> = requests
+        .iter()
+        .flat_map(|r| &r.streams)
+        .flat_map(|s| &s.entries)
+        .collect();
+    let json: serde_json::Value = serde_json::from_str(&entries[0].line)?;
+    assert!(
+        json.get("trace_id").is_some(),
+        "trace_id should be in entry body"
+    );
+    assert!(
+        json.get("span_id").is_some(),
+        "span_id should be in entry body"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// US4: OTel Fields in Plain Text Format (feature = "opentelemetry")
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "opentelemetry")]
+#[tokio::test]
+async fn test_otel_plain_text_fields() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .plain_text()
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+    let tracer = provider.tracer("test");
+    let otel_layer = OpenTelemetryLayer::new(tracer);
+
+    let subscriber = tracing_subscriber::registry().with(layer).with(otel_layer);
+
+    // Act
+    tracing::subscriber::with_default(subscriber, || {
+        let span = tracing::info_span!("plain_otel_span");
+        let _guard = span.enter();
+        tracing::info!("plain otel");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let entries: Vec<_> = requests
+        .iter()
+        .flat_map(|r| &r.streams)
+        .flat_map(|s| &s.entries)
+        .collect();
+    assert!(!entries.is_empty());
+
+    let line = &entries[0].line;
+    assert!(
+        line.starts_with("plain otel"),
+        "line should start with message, got: {:?}",
+        line
+    );
+    assert!(
+        line.contains("trace_id="),
+        "plain text should contain trace_id=, got: {:?}",
+        line
+    );
+    assert!(
+        line.contains("span_id="),
+        "plain text should contain span_id=, got: {:?}",
+        line
+    );
+    assert!(
+        line.contains("span_name=plain_otel_span"),
+        "plain text should contain span_name=plain_otel_span, got: {:?}",
+        line
+    );
+    Ok(())
+}
+
+#[cfg(feature = "opentelemetry")]
+#[tokio::test]
+async fn test_otel_plain_text_exclude_unmapped() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .plain_text()
+        .field_to_label("trace_id", "trace_id")?
+        .exclude_unmapped_fields()
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+    let tracer = provider.tracer("test");
+    let otel_layer = OpenTelemetryLayer::new(tracer);
+
+    let subscriber = tracing_subscriber::registry().with(layer).with(otel_layer);
+
+    // Act
+    tracing::subscriber::with_default(subscriber, || {
+        let span = tracing::info_span!("exclude_span");
+        let _guard = span.enter();
+        tracing::info!("exclude test");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let requests = server.requests();
+    let streams: Vec<_> = requests.iter().flat_map(|r| &r.streams).collect();
+    assert!(!streams.is_empty());
+
+    // trace_id should be a stream label
+    let labels = parse_labels(&streams[0].labels);
+    assert!(
+        labels.contains_key("trace_id"),
+        "trace_id should be promoted to label"
+    );
+
+    // Entry line should be message only (unmapped fields excluded)
+    let entry = &streams[0].entries[0];
+    assert_eq!(
+        entry.line, "exclude test",
+        "entry should be message only with exclude_unmapped_fields"
+    );
+    assert!(
+        !entry.line.contains("span_id"),
+        "span_id should be excluded (unmapped)"
+    );
+    assert!(
+        !entry.line.contains("span_name"),
+        "span_name should be excluded (unmapped)"
+    );
+    assert!(
+        !entry.line.contains("trace_id"),
+        "trace_id should be excluded from entry (promoted to label)"
+    );
+    Ok(())
 }

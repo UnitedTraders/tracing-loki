@@ -81,6 +81,9 @@ use tracing_subscriber::layer::Context as TracingContext;
 use tracing_subscriber::registry::LookupSpan;
 use url::Url;
 
+#[cfg(feature = "opentelemetry")]
+use opentelemetry::trace::{SpanId, TraceId};
+
 use labels::FormattedLabels;
 use no_subscriber::NoSubscriber;
 use ErrorInner as ErrorI;
@@ -387,6 +390,51 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
         // Collect event fields into a map for field extraction
         let mut event_fields = Fields::default();
         event.record(&mut event_fields);
+
+        // Extract OpenTelemetry fields from span extensions
+        #[cfg(feature = "opentelemetry")]
+        {
+            let span_id_for_otel = event
+                .parent()
+                .cloned()
+                .or_else(|| ctx.current_span().id().cloned());
+            if let Some(ref span_ref) = span_id_for_otel.as_ref().and_then(|id| ctx.span(id)) {
+                let extensions = span_ref.extensions();
+                if let Some(otel_data) = extensions.get::<tracing_opentelemetry::OtelData>() {
+                    // Extract span_id from OtelData
+                    if let Some(sid) = otel_data.span_id() {
+                        if sid != SpanId::INVALID {
+                            span_fields.insert(
+                                "span_id".into(),
+                                serde_json::Value::String(format!("{:016x}", sid)),
+                            );
+                        }
+                    }
+
+                    // Extract trace_id (handles root vs child spans internally)
+                    if let Some(trace_id) = otel_data.trace_id() {
+                        if trace_id != TraceId::INVALID {
+                            span_fields.insert(
+                                "trace_id".into(),
+                                serde_json::Value::String(format!("{:032x}", trace_id)),
+                            );
+                        }
+                    }
+                } else {
+                    // Fallback: no OtelData but span exists — use tracing-internal span ID
+                    span_fields.insert(
+                        "span_id".into(),
+                        serde_json::Value::String(format!("{:016x}", span_ref.id().into_u64())),
+                    );
+                }
+
+                // span_name is always available from the span reference
+                span_fields.insert(
+                    "span_name".into(),
+                    serde_json::Value::String(span_ref.name().to_string()),
+                );
+            }
+        }
 
         // Extract dynamic labels from field mappings
         let mut dynamic_labels = HashMap::new();
