@@ -44,8 +44,9 @@ CI runs on stable and nightly Rust: fmt check (stable only), build, test, bench.
 - `compat-0-2-1` — forward compatibility flag (required)
 
 ## Active Technologies
-- Rust 2021 edition, stable + nightly (CI matrix) + racing 0.1, tracing-subscriber 0.3, reqwest, prost, snap, loki-api (workspace) (001-mock-loki-integration-tests)
-- Rust 2021 edition, stable + nightly (CI matrix) + racing 0.1, tracing-subscriber 0.3, reqwest, prost, snap, serde_json, loki-api (workspace) (002-plain-text-format)
+- **Rust**: 2021 edition, stable + nightly (CI matrix)
+- **Core dependencies**: tracing 0.1, tracing-subscriber 0.3, reqwest 0.13, prost 0.14, snap 1.0, flume 0.11, tokio 1.x (time feature), serde_json
+- **Workspace**: loki-api
 
 ## Recent Changes
 - 001-mock-loki-integration-tests: Added Rust 2021 edition, stable + nightly (CI matrix) + racing 0.1, tracing-subscriber 0.3, reqwest, prost, snap, loki-api (workspace)

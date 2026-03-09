@@ -1372,6 +1372,211 @@ async fn test_stress_mixed_levels_and_labels() -> TestResult {
 }
 
 // ---------------------------------------------------------------------------
+// US8: Overflow Drop Counter
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_overflow_drop_counter() -> TestResult {
+    // Arrange: build layer with tiny capacity, do NOT spawn background task
+    let server = FakeLokiServer::start().await;
+    let (layer, _controller, _task) = tracing_loki::builder()
+        .label("host", "test")?
+        .channel_capacity(2)?
+        .build_controller_url(server.url())?;
+
+    // Act: emit 10 events into a channel of capacity 2 with no consumer
+    let subscriber = tracing_subscriber::registry().with(layer.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        for _ in 0..10 {
+            tracing::info!("overflow");
+        }
+    });
+
+    // Assert: at least 8 should be dropped (channel holds 2)
+    assert!(
+        layer.dropped_count() >= 8,
+        "expected at least 8 drops, got {}",
+        layer.dropped_count()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_normal_flow_no_drops() -> TestResult {
+    // Arrange
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        for _ in 0..5 {
+            tracing::info!("no drop");
+        }
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    assert_eq!(
+        layer.dropped_count(),
+        0,
+        "no events should be dropped under normal flow"
+    );
+    let total_entries: usize = server
+        .requests()
+        .iter()
+        .flat_map(|r| &r.streams)
+        .map(|s| s.entries.len())
+        .sum();
+    assert_eq!(total_entries, 5, "all 5 events should arrive");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// US9: Configurable Channel Capacity
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_custom_channel_capacity() -> TestResult {
+    // Arrange: large capacity should prevent drops
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .channel_capacity(1024)?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        for i in 0..500 {
+            tracing::info!(i = i, "large cap");
+        }
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    assert_eq!(layer.dropped_count(), 0, "no drops with large capacity");
+    let total_entries: usize = server
+        .requests()
+        .iter()
+        .flat_map(|r| &r.streams)
+        .map(|s| s.entries.len())
+        .sum();
+    assert_eq!(total_entries, 500, "all 500 events should arrive");
+    Ok(())
+}
+
+#[test]
+fn test_zero_channel_capacity_rejected() {
+    assert!(
+        tracing_loki::builder().channel_capacity(0).is_err(),
+        "channel_capacity(0) should return Err"
+    );
+}
+
+#[tokio::test]
+async fn test_default_channel_capacity() -> TestResult {
+    // Arrange: default capacity (512), emit 500 events
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        for i in 0..500 {
+            tracing::info!(i = i, "default cap");
+        }
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    assert_eq!(
+        layer.dropped_count(),
+        0,
+        "default capacity should handle 500 events"
+    );
+    let total_entries: usize = server
+        .requests()
+        .iter()
+        .flat_map(|r| &r.streams)
+        .map(|s| s.entries.len())
+        .sum();
+    assert_eq!(total_entries, 500, "all 500 events should arrive");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// US10: Configurable Backoff
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_custom_backoff() -> TestResult {
+    // Arrange: short backoff for faster delivery
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .backoff(std::time::Duration::from_millis(10))
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!("fast backoff");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let total_entries: usize = server
+        .requests()
+        .iter()
+        .flat_map(|r| &r.streams)
+        .map(|s| s.entries.len())
+        .sum();
+    assert_eq!(total_entries, 1, "event should arrive with custom backoff");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_default_backoff() -> TestResult {
+    // Arrange: default backoff (500ms)
+    let server = FakeLokiServer::start().await;
+    let (layer, controller, task) = tracing_loki::builder()
+        .label("host", "test")?
+        .build_controller_url(server.url())?;
+    let handle = tokio::spawn(task);
+
+    // Act
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!("default backoff");
+    });
+    controller.shutdown().await;
+    handle.await?;
+
+    // Assert
+    let total_entries: usize = server
+        .requests()
+        .iter()
+        .flat_map(|r| &r.streams)
+        .map(|s| s.entries.len())
+        .sum();
+    assert_eq!(total_entries, 1, "event should arrive with default backoff");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // parse_labels unit test
 // ---------------------------------------------------------------------------
 

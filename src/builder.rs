@@ -1,12 +1,16 @@
 use super::event_channel;
 use super::BackgroundTask;
 use super::BackgroundTaskController;
+use super::BackgroundTaskFuture;
 use super::Error;
 use super::ErrorI;
 use super::FormattedLabels;
 use super::Layer;
 use std::collections::hash_map;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+use std::time::Duration;
 use url::Url;
 
 /// Determines how log entry lines are serialized before being sent to Loki.
@@ -45,7 +49,7 @@ pub struct FieldMapping {
 }
 
 /// Create a [`Builder`] for constructing a [`Layer`] and its corresponding
-/// [`BackgroundTask`].
+/// [`BackgroundTaskFuture`].
 ///
 /// See the crate's root documentation for an example.
 pub fn builder() -> Builder {
@@ -61,11 +65,13 @@ pub fn builder() -> Builder {
         log_format: LogLineFormat::Json,
         field_mappings: Vec::new(),
         exclude_unmapped_fields: false,
+        backoff: Duration::from_millis(500),
+        channel_capacity: 512,
     }
 }
 
 /// Builder for constructing a [`Layer`] and its corresponding
-/// [`BackgroundTask`].
+/// [`BackgroundTaskFuture`].
 ///
 /// See the crate's root documentation for an example.
 #[derive(Clone)]
@@ -76,6 +82,8 @@ pub struct Builder {
     log_format: LogLineFormat,
     field_mappings: Vec<FieldMapping>,
     exclude_unmapped_fields: bool,
+    backoff: Duration,
+    channel_capacity: usize,
 }
 
 impl Builder {
@@ -300,13 +308,58 @@ impl Builder {
         self.exclude_unmapped_fields = true;
         self
     }
-    /// Build the tracing [`Layer`] and its corresponding [`BackgroundTask`].
+    /// Set the base backoff interval for the background task send loop.
+    ///
+    /// The background task sleeps for this duration between send cycles.
+    /// On send failure, exponential backoff is applied starting from this base.
+    ///
+    /// Default: 500ms.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// let builder = tracing_loki::builder()
+    ///     .backoff(Duration::from_millis(100));
+    /// ```
+    pub fn backoff(mut self, backoff: Duration) -> Builder {
+        self.backoff = backoff;
+        self
+    }
+    /// Set the capacity of the internal event channel.
+    ///
+    /// When the channel is full, new events are dropped without blocking.
+    /// Higher values use more memory but reduce drop probability under load.
+    ///
+    /// Default: 512. Must be > 0.
+    ///
+    /// Returns `Err` if `capacity` is 0.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use tracing_loki::Error;
+    /// # fn main() -> Result<(), Error> {
+    /// let builder = tracing_loki::builder()
+    ///     .channel_capacity(1024)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn channel_capacity(mut self, capacity: usize) -> Result<Builder, Error> {
+        if capacity == 0 {
+            return Err(Error(ErrorI::ZeroChannelCapacity));
+        }
+        self.channel_capacity = capacity;
+        Ok(self)
+    }
+    /// Build the tracing [`Layer`] and its corresponding [`BackgroundTaskFuture`].
     ///
     /// The `loki_url` is the URL of the Loki server, like
     /// `https://127.0.0.1:3100`.
     ///
     /// The [`Layer`] needs to be registered with a
-    /// [`tracing_subscriber::Registry`], and the [`BackgroundTask`] needs to
+    /// [`tracing_subscriber::Registry`], and the [`BackgroundTaskFuture`] needs to
     /// be [`tokio::spawn`]ed.
     ///
     /// **Note** that unlike the [`layer`](`crate::layer`) function, this
@@ -314,8 +367,8 @@ impl Builder {
     /// appending `/loki/api/v1/push`.
     ///
     /// See the crate's root documentation for an example.
-    pub fn build_url(self, loki_url: Url) -> Result<(Layer, BackgroundTask), Error> {
-        let (sender, receiver) = event_channel();
+    pub fn build_url(self, loki_url: Url) -> Result<(Layer, BackgroundTaskFuture), Error> {
+        let (sender, receiver) = event_channel(self.channel_capacity);
         Ok((
             Layer {
                 sender,
@@ -323,11 +376,22 @@ impl Builder {
                 log_format: self.log_format,
                 field_mappings: self.field_mappings,
                 exclude_unmapped_fields: self.exclude_unmapped_fields,
+                dropped_count: Arc::new(AtomicU64::new(0)),
+                last_drop_warning: Arc::new(std::sync::Mutex::new(None)),
             },
-            BackgroundTask::new(loki_url, self.http_headers, receiver, &self.labels)?,
+            Box::pin(
+                BackgroundTask::new(
+                    loki_url,
+                    self.http_headers,
+                    receiver,
+                    &self.labels,
+                    self.backoff,
+                )?
+                .start(),
+            ),
         ))
     }
-    /// Build the tracing [`Layer`], [`BackgroundTask`] and its
+    /// Build the tracing [`Layer`], [`BackgroundTaskFuture`] and its
     /// [`BackgroundTaskController`].
     ///
     /// The [`BackgroundTaskController`] can be used to signal the background
@@ -337,7 +401,7 @@ impl Builder {
     /// `https://127.0.0.1:3100`.
     ///
     /// The [`Layer`] needs to be registered with a
-    /// [`tracing_subscriber::Registry`], and the [`BackgroundTask`] needs to
+    /// [`tracing_subscriber::Registry`], and the [`BackgroundTaskFuture`] needs to
     /// be [`tokio::spawn`]ed.
     ///
     /// **Note** that unlike the [`layer`](`crate::layer`) function, this
@@ -348,8 +412,8 @@ impl Builder {
     pub fn build_controller_url(
         self,
         loki_url: Url,
-    ) -> Result<(Layer, BackgroundTaskController, BackgroundTask), Error> {
-        let (sender, receiver) = event_channel();
+    ) -> Result<(Layer, BackgroundTaskController, BackgroundTaskFuture), Error> {
+        let (sender, receiver) = event_channel(self.channel_capacity);
         Ok((
             Layer {
                 sender: sender.clone(),
@@ -357,9 +421,20 @@ impl Builder {
                 log_format: self.log_format,
                 field_mappings: self.field_mappings,
                 exclude_unmapped_fields: self.exclude_unmapped_fields,
+                dropped_count: Arc::new(AtomicU64::new(0)),
+                last_drop_warning: Arc::new(std::sync::Mutex::new(None)),
             },
             BackgroundTaskController { sender },
-            BackgroundTask::new(loki_url, self.http_headers, receiver, &self.labels)?,
+            Box::pin(
+                BackgroundTask::new(
+                    loki_url,
+                    self.http_headers,
+                    receiver,
+                    &self.labels,
+                    self.backoff,
+                )?
+                .start(),
+            ),
         ))
     }
 }
