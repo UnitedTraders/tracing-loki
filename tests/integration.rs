@@ -4,9 +4,9 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use axum::Router;
 use axum::body::Bytes;
 use axum::routing::post;
-use axum::Router;
 use loki_api::logproto::PushRequest;
 use loki_api::prost::Message;
 use tokio::net::TcpListener;

@@ -1,4 +1,3 @@
-use super::event_channel;
 use super::BackgroundTask;
 use super::BackgroundTaskController;
 use super::BackgroundTaskFuture;
@@ -6,10 +5,11 @@ use super::Error;
 use super::ErrorI;
 use super::FormattedLabels;
 use super::Layer;
-use std::collections::hash_map;
+use super::event_channel;
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
+use std::collections::hash_map;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 use url::Url;
 

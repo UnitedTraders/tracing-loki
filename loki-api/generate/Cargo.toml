@@ -6,7 +6,7 @@ repository = "https://github.com/hrxi/tracing-loki"
 keywords = ["tracing", "loki"]
 version = "0.0.1"
 license = "MIT/Apache-2.0"
-edition = "2021"
+edition = "2024"
 
 [build-dependencies]
 prost-build = "0.9"

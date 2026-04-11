@@ -4,11 +4,11 @@
 //! This is done to get a different type ID to work around the issue
 //! <https://github.com/tokio-rs/tracing/issues/1999>.
 
-use tracing_core::span;
 use tracing_core::Event;
 use tracing_core::Interest;
 use tracing_core::Metadata;
 use tracing_core::Subscriber;
+use tracing_core::span;
 
 /// A no-op [`Subscriber`].
 ///

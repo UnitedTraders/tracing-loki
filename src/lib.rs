@@ -62,20 +62,20 @@ use std::fmt;
 use std::future::Future;
 use std::mem;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
+use tracing_core::Event;
+use tracing_core::Level;
+use tracing_core::Subscriber;
 use tracing_core::field::Field;
 use tracing_core::field::Visit;
 use tracing_core::span::Attributes;
 use tracing_core::span::Id;
 use tracing_core::span::Record;
-use tracing_core::Event;
-use tracing_core::Level;
-use tracing_core::Subscriber;
 use tracing_log::NormalizeEvent;
 use tracing_subscriber::layer::Context as TracingContext;
 use tracing_subscriber::registry::LookupSpan;
@@ -84,14 +84,14 @@ use url::Url;
 #[cfg(feature = "opentelemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
 
+use ErrorInner as ErrorI;
 use labels::FormattedLabels;
 use no_subscriber::NoSubscriber;
-use ErrorInner as ErrorI;
 
-pub use builder::builder;
 pub use builder::Builder;
 pub use builder::FieldMapping;
 pub use builder::LogLineFormat;
+pub use builder::builder;
 
 mod builder;
 mod labels;
@@ -402,23 +402,23 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
                 let extensions = span_ref.extensions();
                 if let Some(otel_data) = extensions.get::<tracing_opentelemetry::OtelData>() {
                     // Extract span_id from OtelData
-                    if let Some(sid) = otel_data.span_id() {
-                        if sid != SpanId::INVALID {
-                            span_fields.insert(
-                                "span_id".into(),
-                                serde_json::Value::String(format!("{:016x}", sid)),
-                            );
-                        }
+                    if let Some(sid) = otel_data.span_id()
+                        && sid != SpanId::INVALID
+                    {
+                        span_fields.insert(
+                            "span_id".into(),
+                            serde_json::Value::String(format!("{:016x}", sid)),
+                        );
                     }
 
                     // Extract trace_id (handles root vs child spans internally)
-                    if let Some(trace_id) = otel_data.trace_id() {
-                        if trace_id != TraceId::INVALID {
-                            span_fields.insert(
-                                "trace_id".into(),
-                                serde_json::Value::String(format!("{:032x}", trace_id)),
-                            );
-                        }
+                    if let Some(trace_id) = otel_data.trace_id()
+                        && trace_id != TraceId::INVALID
+                    {
+                        span_fields.insert(
+                            "trace_id".into(),
+                            serde_json::Value::String(format!("{:032x}", trace_id)),
+                        );
                     }
                 } else {
                     // Fallback: no OtelData but span exists — use tracing-internal span ID
@@ -522,23 +522,17 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
                         serde_json::Value::String(meta.target().to_string()),
                     );
                 }
-                if !module_path_mapped {
-                    if let Some(mp) = meta.module_path() {
-                        map.insert(
-                            "_module_path".into(),
-                            serde_json::Value::String(mp.to_string()),
-                        );
-                    }
+                if !module_path_mapped && let Some(mp) = meta.module_path() {
+                    map.insert(
+                        "_module_path".into(),
+                        serde_json::Value::String(mp.to_string()),
+                    );
                 }
-                if !file_mapped {
-                    if let Some(f) = meta.file() {
-                        map.insert("_file".into(), serde_json::Value::String(f.to_string()));
-                    }
+                if !file_mapped && let Some(f) = meta.file() {
+                    map.insert("_file".into(), serde_json::Value::String(f.to_string()));
                 }
-                if !line_mapped {
-                    if let Some(l) = meta.line() {
-                        map.insert("_line".into(), serde_json::json!(l));
-                    }
+                if !line_mapped && let Some(l) = meta.line() {
+                    map.insert("_line".into(), serde_json::json!(l));
                 }
 
                 serde_json::to_string(&map).expect("json serialization shouldn't fail")
