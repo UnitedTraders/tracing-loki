@@ -15,7 +15,7 @@ license = "MIT/Apache-2.0"
 edition = "2024"
 
 [dependencies]
-loki-api = { path = "loki-api" }
+loki-api = { path = "loki-api", version = "0.1.4" }
 reqwest = { version = "0.13", default-features = false }
 snap = "1.0.5"
 serde = { version = "1.0.136", features = ["derive"] }
